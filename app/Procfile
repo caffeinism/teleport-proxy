@@ -1,0 +1,2 @@
+dockergen: docker-gen -watch -notify "pkill -F /run/teleport.pid" /app/teleport.tmpl /etc/teleport/teleport.yaml
+teleport: teleport start -c /etc/teleport/teleport.yaml --pid-file=/run/teleport.pid

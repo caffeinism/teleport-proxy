@@ -1,0 +1,74 @@
+{{ $CurrentContainer := where $ "ID" .Docker.CurrentContainerID | first }}
+{{ define "app-uri" }}
+	{{ $networks := .Networks }}
+	{{ $server_found := "false" }}
+	{{ $container := .Container }}
+        {{/* If only 1 port exposed, use that as a default, else 80 */}}
+        {{ $defaultPort := (when (eq (len $container.Addresses) 1) (first $container.Addresses) (dict "Port" "80")).Port }}
+        {{ $port := (coalesce $container.Env.TELEPORT_PORT $defaultPort) }}
+        {{ $address := where $container.Addresses "Port" $port | first }}
+		{{ range $knownNetwork := $networks }}
+			{{ range $containerNetwork := sortObjectsByKeysAsc $container.Networks "Name" }}
+				{{ if (and (ne $containerNetwork.Name "ingress") (or (eq $knownNetwork.Name $containerNetwork.Name) (eq $knownNetwork.Name "host"))) }}
+    ## Can be connected with "{{ $containerNetwork.Name }}" network
+                    {{ if $address }}
+                        {{/* If we got the containers from swarm and this container's port is published to host, use host IP:PORT */}}
+                        {{ if and $container.Node.ID $address.HostPort }}
+                            {{ $server_found = "true" }}
+    uri: http://{{ $container.Node.Address.IP }}:{{ $address.HostPort }} # {{ $container.Node.Name }}/{{ $container.Name }}
+                        {{/* If there is no swarm node or the port is not published on host, use container's IP:PORT */}}
+                        {{ else if $containerNetwork }}
+                            {{ $server_found = "true" }}
+    uri: http://{{ $containerNetwork.IP }}:{{ $address.Port }} # {{ $container.Name }}
+                        {{ end }}
+                    {{ else if $containerNetwork }}
+                        {{ if $containerNetwork.IP }}
+                            {{ $server_found = "true" }}
+    uri: http://{{ $containerNetwork.IP }}:{{ $port }} # {{ $container.Name }}
+                        {{ else }}
+    uri: http://notfound # /!\ No IP for this network!
+                    	{{ end }}
+					{{ end }}
+				{{ else }}
+    uri: http://notfound # Cannot connect to network '{{ $containerNetwork.Name }}' of this container
+				{{ end }}
+			{{ end }}
+		{{ end }}
+{{ end }}
+version: v3
+teleport:
+  nodename: {{ $CurrentContainer.Hostname }}
+  data_dir: /root/.config
+  join_params:
+    token_name: {{ $CurrentContainer.Env.TELEPORT_TOKEN }}
+    method: token
+  proxy_server: {{ $CurrentContainer.Env.TELEPORT_PROXY }}:443
+  log:
+    output: stderr
+    severity: INFO
+    format:
+      output: text
+  ca_pin: ""
+  diag_addr: ""
+auth_service:
+  enabled: "no"
+ssh_service:
+  enabled: "no"
+proxy_service:
+  enabled: "no"
+app_service:
+  enabled: "yes"
+  apps:
+{{ range $container := $ }}
+{{ if and (contains $container.Env "TELEPORT_NAME") (contains $container.Env "TELEPORT_PORT") }}
+{{ $defaultPort := (when (eq (len $container.Addresses) 1) (first $container.Addresses) (dict "Port" "80")).Port }}
+{{ $port := (coalesce $container.Env.TELEPORT_PORT $defaultPort) }}
+{{ $address := where $container.Addresses "Port" $port | first }}
+{{ $proxyAddress := "teleport.puzzle" }}
+  - name: {{ $container.Env.TELEPORT_NAME }}
+{{ template "app-uri" (dict "Container" $container "Networks" $CurrentContainer.Networks) }}
+    rewrite:
+      headers:
+      - 'Host: {{ $container.Env.TELEPORT_NAME }}.{{ $CurrentContainer.Env.TELEPORT_PROXY }}'
+{{ end }}
+{{ end }}
